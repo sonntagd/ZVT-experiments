@@ -10,6 +10,7 @@ use DDP;
 
 use AnyEvent;
 use AnyEvent::Handle;
+use Net::ZVT::DataObjects;
 
 $| = 1;
 my $status = {
@@ -100,13 +101,27 @@ sub authenticate {
             say 'TYPE: '.join(" " => @{ hexify($type) }).'  '
                 .'LENGTH: '.join(" " => @{ hexify(substr( $response, 2, 1 )) });
 
-            # now read the payload
-            if ($length > 0) {
+            if ($length == 0xFF) {
+                # next two bytes define length
+                shift->unshift_read(chunk => 2, sub {
+                    my ($handle, $data) = @_;
+                    
+                    $length = unpack q(S), $data;
+                    if ($length > 0) {
+                        shift->unshift_read(chunk => $length, sub {
+                            my ($handle, $data) = @_;
+                            say 'DATA: '.join(" " => @{ hexify($data) });
+                            handle_answer($handle, $type, $data);
+                        });
+                    }
+                });
+            }
+            elsif ($length > 0) {
+                # now read the payload
                 shift->unshift_read(chunk => $length, sub {
                     my ($handle, $data) = @_;
                     say 'DATA: '.join(" " => @{ hexify($data) });
                     handle_answer($handle, $type, $data);
-                    # $cv->send();
                 });
             }
         });
@@ -135,7 +150,7 @@ sub handle_answer {
 
             # request authorization:
             my @amount_hex = ( uc(sprintf("%012d", int($amount * 100))) =~ m/../g );
-            $status = 'auth_requested';
+            $status->{master} = 'auth_requested';
             $handle->push_write(
                 terminaldata(
                     [qw{06 01}],
@@ -153,20 +168,26 @@ sub handle_answer {
 
     # intermediate status information
     if ($hextype eq '04 FF') {
-        say 'INTERMEDIATE STATUS INFORMATION ... (needs to be interpreted)';
+        say 'INTERMEDIATE STATUS INFORMATION ... (needs to be parsed)';
         # see chapter 3.7 (page 124)
         my $intermediate_status = ord substr $data, 0, 1;
         say $intermediate_status_values->{$intermediate_status}->{german};
+        if (length $data > 1) {
+            my $timeout = ord substr $data, 1, 1;
+            my $tlv = Net::ZVT::DataObjects::TLV->new({ data => substr $data, 2 });
+            my $result = $tlv->parse();
+            # p $result;
+        }
         send_okay($handle);
     }
 
     # status information
     if ($hextype eq '04 0F') {
-        say 'STATUS INFORMATION ... (needs to be interpreted)';
+        say 'STATUS INFORMATION ... (needs to be parsed)';
         # see chapter 3 (page 114)
         send_okay($handle);
 
-        $status->{status} = interprete_status($data);
+        $status->{status} = parse_status($data);
         $cv->send;
     }
     
@@ -179,126 +200,14 @@ sub handle_answer {
     if ($hextype eq '06 D3') {
         # see chapter Print text block 06 D3
     }
-
-
 }
 
 
-sub interprete_status {
+sub parse_status {
     my ($data) = @_;
-    my $status_result = {};
-    my $pos = 0;
-
-    while ($pos < length $data) {
-say '**** '.__LINE__."  POS: $pos";
-        my $bmp_number = ord substr $data, $pos, 1;
-say 'BMP number = '.$bmp_number;
-last if $bmp_number < 1;
-        if ($bmp_number == 39) {
-            $status_result->{result_code} = substr $data, $pos + 1, 1;
-            $pos += 2;
-        }
-        if ($bmp_number == 4) {
-            $status_result->{amount} = substr $data, $pos + 1, 6;
-            $pos += 7;
-        }
-        if ($bmp_number == 11) {
-            $status_result->{trace} = substr $data, $pos + 1, 3;
-            $pos += 4;
-        }
-        if ($bmp_number == 55) {
-            $status_result->{orig_trace} = substr $data, $pos + 1, 3;
-            $pos += 4;
-        }
-        if ($bmp_number == 12) {
-            $status_result->{time} = substr $data, $pos + 1, 3;
-            $pos += 4;
-        }
-        if ($bmp_number == 13) {
-            $status_result->{date} = substr $data, $pos + 1, 2;
-            $pos += 3;
-        }
-        if ($bmp_number == 14) {
-            $status_result->{expiry_date} = substr $data, $pos + 1, 2;
-            $pos += 3;
-        }
-        if ($bmp_number == 23) {
-            $status_result->{seq_no} = substr $data, $pos + 1, 2;
-            $pos += 3;
-        }
-        if ($bmp_number == 25) {
-            $status_result->{payment_type} = substr $data, $pos + 1, 1;
-            $pos += 2;
-        }
-        if ($bmp_number == 34) {
-            my $len = (ord(substr $data, $pos + 1, 1) - 240) * 10 + ord(substr $data, $pos + 2, 1) - 240;
-            $status_result->{ef_id} = substr $data, $pos + 3, $len;
-            $pos += 3 + $len;
-        }
-        if ($bmp_number == 41) {
-            $status_result->{terminal_id} = substr $data, $pos + 1, 4;
-            $pos += 5;
-        }
-        if ($bmp_number == 59) {
-            $status_result->{aid} = substr $data, $pos + 1, 8;
-            $pos += 9;
-        }
-        if ($bmp_number == 73) {
-            $status_result->{currency_code} = substr $data, $pos + 1, 2;
-            $pos += 3;
-        }
-        if ($bmp_number == 76) {
-            my $len = (ord(substr $data, $pos + 1, 1) - 240) * 10 + ord(substr $data, $pos + 2, 1) - 240;
-            $status_result->{blocked_goods_groups} = substr $data, $pos + 3, $len;
-            $pos += 3 + $len;
-        }
-        if ($bmp_number == 135) {
-            $status_result->{receipt_no} = substr $data, $pos + 1, 2;
-            $pos += 3;
-        }
-        if ($bmp_number == 138) {
-            $status_result->{card_type} = substr $data, $pos + 1, 1;
-            $pos += 2;
-        }
-        if ($bmp_number == 140) {
-            $status_result->{card_type_id} = substr $data, $pos + 1, 1;
-            $pos += 2;
-        }
-        if ($bmp_number == 154) {
-            my $len = (ord(substr $data, $pos + 1, 1) - 240) * 100 + (ord(substr $data, $pos + 2, 1) - 240) * 10 + ord(substr $data, $pos + 3, 1) - 240;
-            $status_result->{failed_payment_records} = substr $data, $pos + 4, $len;
-            $pos += 4 + $len;
-        }
-        if ($bmp_number == 186) {
-            $status_result->{aid_pair} = substr $data, $pos + 1, 5;
-            $pos += 6;
-        }
-        if ($bmp_number == 42) {
-            $status_result->{vu_number} = substr $data, $pos + 1, 15;
-            $pos += 16;
-        }
-        if ($bmp_number == 60) {
-            my $len = (ord(substr $data, $pos + 1, 1) - 240) * 100 + (ord(substr $data, $pos + 2, 1) - 240) * 10 + ord(substr $data, $pos + 3, 1) - 240;
-            $status_result->{additional_text} = substr $data, $pos + 4, $len;
-            $pos += 4 + $len;
-        }
-        if ($bmp_number == 160) {
-            $status_result->{result_code_as} = substr $data, $pos + 1, 1;
-            $pos += 2;
-        }
-        if ($bmp_number == 136) {
-            $status_result->{turnover_no} = substr $data, $pos + 1, 3;
-            $pos += 4;
-        }
-        if ($bmp_number == 6) { # TLV container
-            $status_result->{tlv_container} = substr $data, $pos + 1;
-            last;
-        }
-    }
-say '**** '.__LINE__;
-    return $status_result;
+    my $dataobject = Net::ZVT::DataObjects->new({ data => $data });
+    return $dataobject->parse();
 }
-
 
 sub send_okay {
     say 'SEND: OKAY';
@@ -307,9 +216,8 @@ sub send_okay {
 
 
 sub hexify { [map { uc sprintf('%02x', ord $_) } split //, $_[0]] }
-sub hexify_str { join " ", @{ hexify(@_) } }
+sub hexify_str { my $sep = $_[1] || q( ); uc unpack("H*", shift) =~ s/(..)(?!$)/$1$sep/gr }
 
-# 06 01 0A 04 00 00 00 01 10 10 00 49 09 78 10 03 F2 FF
 sub unhexify { join "" => map { chr hex } @{$_[0]} }
 
 
