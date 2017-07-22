@@ -61,7 +61,6 @@ sub parse {
             $tagnumber >>= 1;
             $tagnumber = _hexify_str($tagnumber);
         }
-        print "tagnumber: $tagnumber\n";
 
         # read length and data
         my $tlvdata = substr($data, $pos);
