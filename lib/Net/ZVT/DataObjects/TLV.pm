@@ -55,10 +55,13 @@ sub parse {
                 $tagnumber += $byte & 0x7F;
                 last if !($byte >> 7);
             }
+            $tagnumber = '1F '._hexify_str($tagnumber);
         }
         else {
             $tagnumber >>= 1;
+            $tagnumber = _hexify_str($tagnumber);
         }
+        print "tagnumber: $tagnumber\n";
 
         # read length and data
         my $tlvdata = substr($data, $pos);
@@ -66,11 +69,11 @@ sub parse {
         my ($datalength, $length_bytes) = $sub_tlv->get_length();
         
         if ($primitive_data_object) {
-            $result->{$tagnumber} = $sub_tlv->get_data();
+            push @{ $result->{$tagnumber} ||= [] }, $sub_tlv->get_data();
         }
         else {
             # recursive data extraction for constructed data objects:
-            $result->{$tagnumber} = $sub_tlv->parse();
+            push @{ $result->{$tagnumber} ||= [] }, $sub_tlv->parse();
         }
         
         $pos += $length_bytes + $datalength;
@@ -93,5 +96,7 @@ sub get_length {
     return (unpack(q(S), substr $self->{data}, 1, 2), 3)  if $len == 0x82; # two length-bytes follow
     die q(invalid tlv container length definition);
 }
+
+sub _hexify_str { my $sep = $_[1] || q( ); uc unpack("H*", shift) =~ s/(..)(?!$)/$1$sep/gr }
 
 1;

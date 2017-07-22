@@ -18,6 +18,7 @@ my $status = {
     status              => {},
 };
 
+my $password = [qw{00 00 00}];
 
 my $intermediate_status_values = {
       0 => { english => 'PT is waiting for amount-confirmation',    german => 'BZT wartet auf Betragsbestätigung', },
@@ -88,7 +89,7 @@ sub authenticate {
     $handle->push_write(
         terminaldata(
             [qw{06 00}],
-            [qw{00 00 00 08 09 78 03 00 06 06 26 04 0A 02 06 D3}],
+            [@{$password}, get_config_byte(), qw{09 78 03 00 06 06 26 04 0A 02 06 D3}],
         ),
     );
     $status->{master} = 'registration';
@@ -124,6 +125,9 @@ sub authenticate {
                     handle_answer($handle, $type, $data);
                 });
             }
+            else {
+                handle_answer($handle, $type, '');
+            }
         });
     });
 }
@@ -142,6 +146,7 @@ sub handle_answer {
 
     if ($hextype eq '06 0F') {
         say 'COMPLETION';
+        say 'MASTER STATUS: '.$status->{master};
         if ($status->{master} eq 'registration') {
             say 'Registration completed';
             # TODO: data should be checked!
@@ -159,6 +164,13 @@ sub handle_answer {
             );
             return;
         }
+
+        if ($status->{master} eq 'auth_requested') {
+            say 'Authorization completed';
+            send_okay($handle);
+            $handle->on_drain(sub { $cv->send; });
+            return;
+        }
     }
 
     if ($hextype eq '06 1E') {
@@ -171,12 +183,16 @@ sub handle_answer {
         say 'INTERMEDIATE STATUS INFORMATION ... (needs to be parsed)';
         # see chapter 3.7 (page 124)
         my $intermediate_status = ord substr $data, 0, 1;
-        say $intermediate_status_values->{$intermediate_status}->{german};
+        say $intermediate_status_values->{$intermediate_status}->{german} || 'Unbekannter Status.';
         if (length $data > 1) {
             my $timeout = ord substr $data, 1, 1;
             my $tlv = Net::ZVT::DataObjects::TLV->new({ data => substr $data, 2 });
             my $result = $tlv->parse();
-            # p $result;
+            p $result if not exists $intermediate_status_values->{$intermediate_status};
+        }
+        else {
+            say 'DATA too short:';
+            p $data;
         }
         send_okay($handle);
     }
@@ -188,17 +204,27 @@ sub handle_answer {
         send_okay($handle);
 
         $status->{status} = parse_status($data);
-        $cv->send;
+        say 'STATUS: ';
+        p $status->{status};
+        # $cv->send;
     }
     
     # print line
     if ($hextype eq '06 D1') {
-        # see chapter Print line
+        # see chapter Print line (page 122)
+        my ($attribute, $text) = split //, $data, 2;
+        my $tinfo = { attribute => $attribute, text => $text };
+        p $tinfo;
     }
 
     # print text-block
     if ($hextype eq '06 D3') {
-        # see chapter Print text block 06 D3
+        # see chapter Print text block 06 D3 (page 123)
+        my $tlv = Net::ZVT::DataObjects::TLV->new({ data => substr $data, 1 });
+        my $result = $tlv->parse();
+        # p $result;
+        use Data::Dumper;
+        print Dumper($result);
     }
 }
 
@@ -237,3 +263,7 @@ sub dumpall {
     p @_;
 }
 
+sub get_config_byte {
+    # return qw{08}; # no receipt print by ECR
+    return qw{8A}; # receipt print by ECR == 10001010
+}
