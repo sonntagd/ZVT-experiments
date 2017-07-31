@@ -86,10 +86,42 @@ sub authenticate {
         },
     );
 
+    my @registration_tlv_container = (
+        qw{26 04 0A 02 06 D3},
+            # 26 = list of permitted ZVT command
+            # 04 = length
+            # 0A .. D3 = data
+            # 06 D3 = print block (06 D1 would mean print line)
+        qw{12 01 60},
+            # 12 = number of characters per line of the printer
+            # 01 = length
+            # 60 = data
+        # qw{1F 04 02 F9 80},
+            # 1F 04 = receipt-parameter
+            # 02 = length
+            # FF 00 = data
+            # meaning:
+            # - positive and negative customer-receipt required
+            # - positive and negative merchant-receipt required
+            # - customer-receipt should be sent before the merchant-receipt
+            # - print short receipt
+            # - do not print product-data
+            # - use ECR as printer
+            # DOES NOT WORK WITH Ingenico iCT220
+    );
+
     $handle->push_write(
         terminaldata(
             [qw{06 00}],
-            [@{$password}, get_config_byte(), qw{09 78 03 00 06 06 26 04 0A 02 06 D3}],
+            [
+                @{$password},
+                get_config_byte(),
+                qw{09 78}, # CC
+                qw{03 00}, # 06 = service-byte
+                qw{06},    # 06 = start of TLV-container
+                sprintf("%02x", scalar @registration_tlv_container), # length of TLV-container data
+                @registration_tlv_container,
+            ],
         ),
     );
     $status->{master} = 'registration';
@@ -206,7 +238,6 @@ sub handle_answer {
         $status->{status} = parse_status($data);
         say 'STATUS: ';
         p $status->{status};
-        # $cv->send;
     }
     
     # print line
@@ -215,6 +246,7 @@ sub handle_answer {
         my ($attribute, $text) = split //, $data, 2;
         my $tinfo = { attribute => $attribute, text => $text };
         p $tinfo;
+        send_okay($handle);
     }
 
     # print text-block
@@ -222,7 +254,7 @@ sub handle_answer {
         # see chapter Print text block 06 D3 (page 123)
         my $tlv = Net::ZVT::DataObjects::TLV->new({ data => substr $data, 1 });
         my $result = $tlv->parse();
-        # p $result;
+        send_okay($handle);
         use Data::Dumper;
         print Dumper($result);
     }
@@ -256,6 +288,7 @@ sub sendtoterminal {
 sub terminaldata {
     my ($type, $data) = @_;
     $data ||= [];
+    say 'SEND: '.join " " => @$type, sprintf("%02x", length(unhexify($data))), @$data;
     return unhexify($type).chr(length unhexify($data)).unhexify($data);
 }
 
@@ -265,5 +298,6 @@ sub dumpall {
 
 sub get_config_byte {
     # return qw{08}; # no receipt print by ECR
-    return qw{8A}; # receipt print by ECR == 10001010
+    # return qw{8A}; # receipt print by ECR == 10001010
+    return qw{8E}; # receipt print by ECR == 10001010
 }
